@@ -3,7 +3,7 @@ LinkBeam Backend Server
 Handles device discovery and file sharing on LAN
 """
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import socket
@@ -14,7 +14,7 @@ import time
 from werkzeug.utils import secure_filename
 import uuid
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend/build', static_url_path='')
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -217,6 +217,18 @@ def list_files():
                 'modified': os.path.getmtime(filepath)
             })
     return jsonify(files)
+
+
+@app.route('/')
+def serve_react():
+    """Serve the React app"""
+    return send_from_directory(app.static_folder, 'index.html')
+
+
+@app.route('/preview')
+def serve_preview():
+    """Serve the preview page"""
+    return send_from_directory(app.static_folder, 'preview.html')
 
 
 @socketio.on('connect')
