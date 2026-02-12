@@ -173,7 +173,7 @@ LinkBeam/
 - python-socketio 5.11.0
 
 ### Frontend
-- React 18.x
+- React 19.x
 - Socket.IO Client
 - Axios
 - Modern CSS with animations

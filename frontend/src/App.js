@@ -16,7 +16,9 @@ function App() {
   const [socket, setSocket] = useState(null);
   const [availableFiles, setAvailableFiles] = useState([]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
+    // API_URL is from process.env and is static, safe to omit from deps
     // Fetch device info
     axios.get(`${API_URL}/api/device/info`)
       .then(response => {
