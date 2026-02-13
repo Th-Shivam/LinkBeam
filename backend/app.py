@@ -3,7 +3,7 @@ LinkBeam Backend Server
 Handles device discovery and file sharing on LAN
 """
 
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, abort
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import socket
@@ -13,10 +13,15 @@ import json
 import time
 from werkzeug.utils import secure_filename
 import uuid
+from pathlib import Path
 
 app = Flask(__name__, static_folder='../frontend/build', static_url_path='')
-CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Security Configuration
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'doc', 'docx', 'xls', 'xlsx', 'zip', 'rar', 'mp4', 'mp3', 'avi', 'mkv'}
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
+socketio = SocketIO(app, cors_allowed_origins=["http://localhost:3000", "http://127.0.0.1:3000"])
 
 # Configuration
 UPLOAD_FOLDER = 'uploads'
@@ -24,8 +29,9 @@ DISCOVERY_PORT = 12346
 FILE_PORT = 12345
 BUFFER_SIZE = 4096
 
-# Ensure upload folder exists
+# Ensure upload folder exists with proper permissions
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.chmod(UPLOAD_FOLDER, 0o755)
 
 # Device information
 DEVICE_ID = str(uuid.uuid4())
@@ -33,6 +39,21 @@ DEVICE_NAME = socket.gethostname()
 
 # Store discovered devices
 discovered_devices = {}
+
+
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def safe_join(directory, filename):
+    """Safely join directory and filename to prevent path traversal"""
+    filepath = Path(directory) / filename
+    try:
+        filepath.resolve().relative_to(Path(directory).resolve())
+        return str(filepath)
+    except ValueError:
+        abort(400, description="Invalid file path")
 
 
 def get_local_ip():
@@ -165,7 +186,7 @@ def get_discovered_devices():
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    """Handle file upload"""
+    """Handle file upload with security checks"""
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
         
@@ -173,62 +194,102 @@ def upload_file():
     
     if file.filename == '':
         return jsonify({'error': 'No file selected'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'File type not allowed'}), 400
         
     filename = secure_filename(file.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    if not filename:
+        return jsonify({'error': 'Invalid filename'}), 400
+    
+    filepath = safe_join(UPLOAD_FOLDER, filename)
     
     # Add timestamp if file exists
     if os.path.exists(filepath):
         name, ext = os.path.splitext(filename)
         filename = f"{name}_{int(time.time())}{ext}"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        filepath = safe_join(UPLOAD_FOLDER, filename)
     
-    file.save(filepath)
+    try:
+        file.save(filepath)
+        os.chmod(filepath, 0o644)
+    except Exception as e:
+        return jsonify({'error': f'Failed to save file: {str(e)}'}), 500
     
     return jsonify({
         'success': True,
         'filename': filename,
-        'filepath': filepath,
         'size': os.path.getsize(filepath)
     })
 
 
 @app.route('/api/download/<filename>', methods=['GET'])
 def download_file(filename):
-    """Handle file download"""
-    filepath = os.path.join(UPLOAD_FOLDER, secure_filename(filename))
+    """Handle file download with path traversal protection"""
+    filename = secure_filename(filename)
+    if not filename:
+        abort(400, description="Invalid filename")
     
-    if not os.path.exists(filepath):
-        return jsonify({'error': 'File not found'}), 404
-        
-    return send_file(filepath, as_attachment=True)
+    filepath = safe_join(UPLOAD_FOLDER, filename)
+    
+    if not os.path.exists(filepath) or not os.path.isfile(filepath):
+        abort(404, description="File not found")
+    
+    try:
+        return send_file(filepath, as_attachment=True, download_name=filename)
+    except Exception as e:
+        abort(500, description="Error downloading file")
 
 
 @app.route('/api/files', methods=['GET'])
 def list_files():
-    """List available files"""
+    """List available files with security checks"""
     files = []
-    for filename in os.listdir(UPLOAD_FOLDER):
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        if os.path.isfile(filepath):
-            files.append({
-                'filename': filename,
-                'size': os.path.getsize(filepath),
-                'modified': os.path.getmtime(filepath)
-            })
+    try:
+        for filename in os.listdir(UPLOAD_FOLDER):
+            filepath = safe_join(UPLOAD_FOLDER, filename)
+            if os.path.isfile(filepath):
+                files.append({
+                    'filename': secure_filename(filename),
+                    'size': os.path.getsize(filepath),
+                    'modified': os.path.getmtime(filepath)
+                })
+    except Exception as e:
+        return jsonify({'error': 'Failed to list files'}), 500
     return jsonify(files)
 
 
 @app.route('/')
 def serve_react():
     """Serve the React app"""
-    return send_from_directory(app.static_folder, 'index.html')
+    try:
+        return send_from_directory(app.static_folder, 'index.html')
+    except Exception:
+        return jsonify({'error': 'Frontend not built'}), 404
 
 
-@app.route('/preview')
-def serve_preview():
-    """Serve the preview page"""
-    return send_from_directory(app.static_folder, 'preview.html')
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    """Handle file too large error"""
+    return jsonify({'error': 'File too large. Maximum size is 500MB'}), 413
+
+
+@app.errorhandler(400)
+def bad_request(error):
+    """Handle bad request"""
+    return jsonify({'error': str(error.description)}), 400
+
+
+@app.errorhandler(404)
+def not_found(error):
+    """Handle not found"""
+    return jsonify({'error': str(error.description)}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle internal server error"""
+    return jsonify({'error': 'Internal server error'}), 500
 
 
 @socketio.on('connect')
@@ -261,6 +322,8 @@ if __name__ == '__main__':
     print(f"IP Address: {get_local_ip()}")
     print(f"Server Port: 5000")
     print(f"Discovery Port: {DISCOVERY_PORT}")
+    print(f"Max File Size: 500MB")
+    print(f"Allowed Extensions: {', '.join(ALLOWED_EXTENSIONS)}")
     
-    # Run the Flask app with SocketIO
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    # Run the Flask app with SocketIO (use production server for deployment)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
