@@ -97,6 +97,12 @@ function App() {
       return;
     }
 
+    // File size check (500MB)
+    if (selectedFile.size > 500 * 1024 * 1024) {
+      setStatus('Error: File too large. Maximum size is 500MB');
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', selectedFile);
 
@@ -115,14 +121,17 @@ function App() {
             );
             setUploadProgress(percentCompleted);
           },
+          timeout: 300000, // 5 minute timeout
         }
       );
 
       setStatus(`File sent successfully to ${selectedDevice.device_name}!`);
       setUploadProgress(0);
       setSelectedFile(null);
+      document.getElementById('file-input').value = '';
     } catch (error) {
-      setStatus(`Error sending file: ${error.message}`);
+      const errorMsg = error.response?.data?.error || error.message;
+      setStatus(`Error sending file: ${errorMsg}`);
       setUploadProgress(0);
     }
   };
@@ -130,8 +139,11 @@ function App() {
   const handleDownloadFile = async (filename) => {
     try {
       const response = await axios.get(
-        `${API_URL}/api/download/${filename}`,
-        { responseType: 'blob' }
+        `${API_URL}/api/download/${encodeURIComponent(filename)}`,
+        { 
+          responseType: 'blob',
+          timeout: 300000 // 5 minute timeout
+        }
       );
 
       const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -141,10 +153,12 @@ function App() {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      window.URL.revokeObjectURL(url);
 
       setStatus(`Downloaded: ${filename}`);
     } catch (error) {
-      setStatus(`Error downloading file: ${error.message}`);
+      const errorMsg = error.response?.data?.error || error.message;
+      setStatus(`Error downloading file: ${errorMsg}`);
     }
   };
 
